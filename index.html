@@ -54,7 +54,6 @@
     .danger{background:#fee2e2;color:#991b1b}
     .success{background:#ecfdf5;color:#065f46}
     .badge{background:var(--accent2);color:white;padding:4px 8px;border-radius:999px;font-size:12px}
-    /* small style for language buttons */
     .lang-buttons{display:flex;gap:8px;justify-content:center;margin-top:8px}
     .lang-btn{padding:6px 10px;border-radius:8px;border:1px solid rgba(0,0,0,0.08);background:white;cursor:pointer}
   </style>
@@ -229,6 +228,11 @@
   <div class="modal" id="invoiceModal">
     <div class="panel" id="invoicePanel"></div>
   </div>
+
+  <!-- Firebase libs (compat mode for easier migration) -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-storage-compat.js"></script>
 
   <script>
     /* ------------------------
@@ -405,21 +409,18 @@
       }
     };
 
-    const KEY_PRODUCTS = 'coursa_products_v2';
-    const KEY_CLIENTS = 'coursa_clients_v2';
-    const KEY_ORDERS = 'coursa_orders_v2';
-    const KEY_CURRENT = 'coursa_current_client_v2';
-    const KEY_LANG = 'coursa_lang_v1';
-
-    let products = JSON.parse(localStorage.getItem(KEY_PRODUCTS) || 'null') || [];
-    let clients = JSON.parse(localStorage.getItem(KEY_CLIENTS) || 'null') || [];
-    let orders = JSON.parse(localStorage.getItem(KEY_ORDERS) || 'null') || [];
-    let currentClient = JSON.parse(localStorage.getItem(KEY_CURRENT) || 'null');
-    let cart = JSON.parse(sessionStorage.getItem('coursa_cart') || '[]');
+    // Hardcoded supplier password (unchanged)
     const SUPPLIER_PWD = '7 juillet 1993';
 
-    // langage courant
-    let currentLang = localStorage.getItem(KEY_LANG) || 'fr';
+    // In-memory app state (no localStorage for persistent data)
+    let products = [];    // local cache filled by onSnapshot
+    let clients = [];     // local cache filled by onSnapshot
+    let orders = [];      // local cache filled by onSnapshot
+    let currentClient = null; // logged in client (in-memory)
+    let cart = [];        // cart persisted in Firestore per client
+
+    // UI language
+    let currentLang = 'fr';
 
     function t(key, vars) {
       const dict = TRANSLATIONS[currentLang] || TRANSLATIONS['fr'];
@@ -430,14 +431,55 @@
       return s;
     }
 
-    function saveAll(){ localStorage.setItem(KEY_PRODUCTS, JSON.stringify(products)); localStorage.setItem(KEY_CLIENTS, JSON.stringify(clients)); localStorage.setItem(KEY_ORDERS, JSON.stringify(orders)); }
+    function formatPrice(n){ return n+' DA'; }
+    function byId(id){ return document.getElementById(id); }
 
-    function formatPrice(n){ return n+' DA' }
-    function byId(id){ return document.getElementById(id) }
+    // --- Firebase initialization placeholder (replace with your config) ---
+    // IMPORTANT: remplace la configuration ci-dessous par ta firebaseConfig
+    // depuis la console Firebase. Ex :
+    // const firebaseConfig = { apiKey: "...", authDomain: "...", projectId: "...", storageBucket: "...", messagingSenderId: "...", appId: "..." };
+    const firebaseConfig = {
+      // <-- COLLE ICI TA firebaseConfig (depuis Firebase Console) -->
+      apiKey: "",
+      authDomain: "",
+      projectId: "",
+      storageBucket: "",
+      messagingSenderId: "",
+      appId: ""
+    };
 
+    // initialize firebase
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    const storage = firebase.storage();
+
+    // --- Real-time listeners ---
+    function startRealtimeListeners(){
+      // produits
+      db.collection('produits').orderBy('created', 'desc').onSnapshot(snap => {
+        products = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        renderProducts();
+        renderSupplierProductsList(); // update supplier tab if open
+      });
+
+      // clients (we'll keep local cache for supplier view)
+      db.collection('clients').orderBy('created', 'desc').onSnapshot(snap => {
+        clients = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        renderSupplierPendingCount();
+        renderSupplierClientsTab(); // refresh tab if visible
+      });
+
+      // commandes
+      db.collection('commandes').orderBy('date', 'desc').onSnapshot(snap => {
+        orders = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        renderSupplierOrdersTab();
+        renderClientOrders(); // refresh client order list if logged in
+      });
+    }
+
+    // --- init UI language and start listeners ---
     function applyLanguage(lang) {
       currentLang = lang;
-      localStorage.setItem(KEY_LANG, lang);
       document.documentElement.lang = (lang === 'ar') ? 'ar' : 'fr';
       document.body.setAttribute('dir', (lang === 'ar') ? 'rtl' : 'ltr');
 
@@ -476,241 +518,33 @@
 
       byId('supplierPanelTitle').textContent = t('supplier_panel');
       byId('supplierPanelSub').textContent = t('supplier_sub');
-      byId('supplierLogoutBtn').textContent = t('close'); // "Se déconnecter" better to use close translation (or add separate key)
-      // re-render dynamic UI
+
       renderAccountBlock();
       renderProducts();
       renderCart();
       renderSupplierPendingCount();
       renderInitialPendingNotice();
-
-      // if supplier panel visible, refresh supplier tabs in current language
-      const sp = byId('supplierPanelSection');
-      if (sp && sp.style.display !== 'none') {
-        showSupplierTab('clients');
-      }
-
-      // update preview button if exists
-      const previewBtn = document.querySelector('#supplierPanelSection button[data-preview-btn]');
-      if (previewBtn) previewBtn.textContent = t('preview_btn');
     }
 
-    function setLanguage(lang) {
-      applyLanguage(lang);
-    }
+    function setLanguage(lang){ applyLanguage(lang); }
 
-    // --- init ---
-    function init(){
-      // defaults products
-      if(products.length===0){
-        // ensure images are arrays
-        products.push({id:'P-1',title:'T-shirt Coursa',price:1200,desc:'T-shirt confortable',images:[],created:Date.now()});
-        products.push({id:'P-2',title:'Casquette Coursa',price:800,desc:'Casquette ajustable',images:[],created:Date.now()});
-        saveAll();
-      } else {
-        // normalize images to arrays in case storage had single string
-        products = products.map(p => {
-          if(!p.images) p.images = [];
-          if(typeof p.images === 'string') p.images = p.images.split(',').map(x => x.trim()).filter(Boolean);
-          return p;
-        });
-      }
-      applyLanguage(currentLang);
-    }
+    // --- Helper UI functions (placeholders, image helpers) ---
+    function placeholder(ti){ return 'data:image/svg+xml;utf8,'+encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='600' height='400'><rect width='100%' height='100%' fill='#f6f8fb'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-size='24' fill='#cbd5e1'>${ti}</text></svg>`); }
 
-    // --- Client auth modal functions ---
-    function openClientAuth(){ byId('clientAuthModal').style.display='flex'; renderClientForm('exist'); }
-    function closeClientForm(){ byId('clientAuthModal').style.display='none'; const area = byId('clientFormArea'); area.innerHTML=''; }
-
-    function renderClientForm(mode){
-      const area = byId('clientFormArea');
-      if(mode==='new'){
-        area.innerHTML = `
-          <input class='input' id='c_nom' placeholder='${t('name')}'><br><br>
-          <input class='input' id='c_prenom' placeholder='${t('surname')}'><br><br>
-          <input class='input' id='c_tel' placeholder='${t('phone')}'><br><br>
-          <input class='input' id='c_loc' placeholder='${t('location')}'><br><br>
-          <button onclick="submitClient('new')">${t('save')}</button>
-        `;
-      } else {
-        area.innerHTML = `
-          <input class='input' id='c_nom' placeholder='${t('name')}'><br><br>
-          <input class='input' id='c_prenom' placeholder='${t('surname')}'><br><br>
-          <input class='input' id='c_tel' placeholder='${t('phone')}'><br><br>
-          <button onclick="submitClient('exist')">${t('login')}</button>
-        `;
-      }
-    }
-
-    function submitClient(mode){
-      const nom = byId('c_nom')?.value?.trim();
-      const prenom = byId('c_prenom')?.value?.trim();
-      const tel = byId('c_tel')?.value?.trim();
-      const loc = byId('c_loc')?.value?.trim();
-      if(!nom||!prenom||!tel){ alert(t('fill_required')); return; }
-      if(mode==='new' && !loc){ alert(t('location_required')); return; }
-      if(mode==='new'){
-        const client = {id:'C-'+Date.now(),nom,prenom,tel,loc,status:'pending',created:Date.now()};
-        clients.push(client);
-        saveAll();
-        sessionStorage.setItem('coursa_last_client', JSON.stringify({id:client.id,nom:client.nom,prenom:client.prenom}));
-        closeClientForm();
-        showPendingForClient();
-        renderSupplierPendingCount();
-        alert(t('account_created_pending'));
-      } else {
-        const found = clients.find(c=>c.nom===nom&&c.prenom===prenom&&c.tel===tel&&c.status==='validated');
-        if(found){
-          currentClient = found;
-          localStorage.setItem(KEY_CURRENT, JSON.stringify(currentClient));
-          closeClientForm();
-          enterHome();
-        } else {
-          alert(t('account_not_found'));
-        }
-      }
-    }
-
-    function showPendingForClient(){
-      showOnly('initialScreen');
-      const last = JSON.parse(sessionStorage.getItem('coursa_last_client')||'null');
-      if(last){
-        byId('pendingNotice').innerHTML = `<div style="background:#fff3cd;padding:12px;border-radius:8px;border:1px solid #ffeeba"><strong>${t('account_registered')}</strong><div class='muted'>${t('account_pending_description', {name: last.nom + ' ' + last.prenom})}</div><div style='margin-top:8px'><img src='data:image/svg+xml;utf8,${encodeURIComponent("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"160\" height=\"80\"><rect width=\"100%\" height=\"100%\" fill=\"#fff7e6\"/><text x=\"50%\" y=\"50%\" dominant-baseline=\"middle\" text-anchor=\"middle\" font-size=14 fill=\"#92400e\">En attente de validation</text></svg>")}' alt='pending'></div></div>`;
-      }
-    }
-
-    // --- Supplier login and panel ---
-    function openSupplierLogin(){ showOnly('supplierLoginSection'); byId('supplierPwd').value=''; renderSupplierPendingCount(); }
-    function closeSupplierLogin(){ showOnly('initialScreen'); }
-    function supplierLogin(){ const v = byId('supplierPwd').value.trim(); if(v===SUPPLIER_PWD){ showSupplierPanel(); } else { alert(t('incorrect_password')); } }
-
-    function showSupplierPanel(){ byId('supplierLoginSection').style.display='none'; byId('supplierPanelSection').style.display='block'; showSupplierTab('clients'); renderSupplierPendingCount(); }
-
-    function logoutSupplier(){ byId('supplierPanelSection').style.display='none'; showOnly('initialScreen'); }
-
-    function renderInitialPendingNotice(){ const pending = clients.filter(c=>c.status==='pending'); const el = byId('pendingNotice'); if(pending.length>0){ el.innerHTML = `<div style="background:#fff3cd;padding:12px;border-radius:8px;border:1px solid #ffeeba"><strong>${pending.length} nouveau(x) client(s) en attente</strong><div class='muted'>${t('supplier_protected')}</div></div>`; } else { el.innerHTML=''; } }
-
-    function renderSupplierPendingCount(){ const count = clients.filter(c=>c.status==='pending').length; const el = byId('pendingCount'); if(el) el.textContent = count; }
-
-    function showSupplierTab(tab){
-      const container = byId('supplierTabs');
-      if(tab==='clients'){
-        let html = `<h4>${t('clients')}</h4>`;
-        const pending = clients.filter(c=>c.status==='pending');
-        const validated = clients.filter(c=>c.status==='validated');
-        html += `<h5>${t('clients_pending')} (${pending.length})</h5>`;
-        if(pending.length===0) html += `<div class="muted">${t('no_clients_pending')}</div>`;
-        pending.forEach(c=>{
-          html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid #f1f5f9"><div><strong>${c.nom} ${c.prenom}</strong><div class='muted'>${c.tel} — ${c.loc}</div></div><div class="row"><button onclick="validateClient('${c.id}')">${t('accept')}</button><button class="input" onclick="rejectClient('${c.id}')">${t('reject')}</button></div></div>`;
-        });
-        html += `<h5 style='margin-top:12px'>${t('clients_validated')} (${validated.length})</h5>`;
-        if(validated.length===0) html += `<div class="muted">${t('no_clients_validated')}</div>`;
-        validated.forEach(c=>{
-          html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid #f1f5f9"><div><strong>${c.nom} ${c.prenom}</strong><div class='muted'>${c.tel} — ${c.loc}</div></div><div class="row"><button class='input' onclick="deleteClient('${c.id}')">${t('delete')}</button></div></div>`;
-        });
-        container.innerHTML = html;
-      } else if(tab==='products'){
-        let html = `<h4>${t('products')}</h4>`;
-        html += `<div style='display:flex;gap:8px;align-items:center'><input id='sp_title' class='input' placeholder='${t('name')}'><input id='sp_price' class='input' placeholder='${t('price') || "Prix"}'><input id='sp_desc' class='input' placeholder='${t('article') || "Description"}'><input type='file' id='sp_images' multiple accept='image/*'><button onclick='addProductFromSupplier()'>${t('add_product')}</button></div>`;
-        html += '<div style="margin-top:12px">';
-        if(products.length===0) html += `<div class="muted">${t('no_products')}</div>`;
-        products.forEach((p,i)=>{
-          html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid #f1f5f9"><div><strong>${p.title}</strong><div class='muted'>${p.price} DA — ${p.desc}</div></div><div class='row'><button onclick="editProduct('${p.id}')">${t('edit')}</button><button class='input' onclick="deleteProduct('${p.id}')">${t('delete')}</button></div></div>`;
-        });
-        html += '</div>';
-        container.innerHTML = html;
-      } else if(tab==='orders'){
-        let html = `<h4>${t('bank_orders')}</h4>`;
-        if(orders.length===0){ html += `<div class="muted">${t('no_orders')}</div>`; }
-        let totalAll = 0;
-        orders.forEach(o=>{
-          html += `<div id="order_row_${o.id}" style='border:1px solid #eef6ff;padding:10px;border-radius:8px;margin-bottom:8px'><div style='display:flex;justify-content:space-between'><div><strong>${o.client.nom} ${o.client.prenom}</strong><div class='muted'>${o.client.tel} — ${o.client.loc}</div></div><div class='muted'>${new Date(o.date).toLocaleString()}</div></div>`;
-          html += '<table style="margin-top:8px"><thead><tr><th>'+t('article')+'</th><th>'+t('qty')+'</th><th>'+t('price')+'</th></tr></thead><tbody>';
-          o.items.forEach(it=>{
-            html += `<tr><td>${it.title}</td><td>${it.qty}</td><td>${it.subtotal} DA</td></tr>`;
-          });
-          html += `</tbody></table><div style='display:flex;justify-content:space-between;align-items:center;margin-top:8px'><div></div><div style='text-align:right'><strong>${t('total')}: ${o.total} DA</strong></div></div>`;
-          // delete order button for supplier
-          html += `<div style='text-align:right;margin-top:8px'><button class='input' onclick="deleteOrder('${o.id}')">🗑️ Supprimer</button></div>`;
-          html += `</div>`;
-          totalAll += o.total;
-        });
-        html += `<div style='margin-top:12px;text-align:right'><strong>${t('total_revenue')}: ${totalAll} DA</strong></div>`;
-        container.innerHTML = html;
-      }
-    }
-
-    function deleteOrder(orderId){
-      if(!confirm('Supprimer cette commande ?')) return;
-      orders = orders.filter(o => o.id !== orderId);
-      saveAll();
-      // also remove from client-side stored orders if present
-      let clientOrders = JSON.parse(localStorage.getItem('coursa_client_orders') || '[]');
-      clientOrders = clientOrders.filter(o => o.id !== orderId);
-      localStorage.setItem('coursa_client_orders', JSON.stringify(clientOrders));
-      showSupplierTab('orders');
-      renderClientOrders();
-      alert('Commande supprimée');
-    }
-
-    function validateClient(id){ const idx = clients.findIndex(c=>c.id===id); if(idx>-1){ clients[idx].status='validated'; saveAll(); renderSupplierPendingCount(); renderInitialPendingNotice(); alert(t('client_validated')); } }
-    function rejectClient(id){ clients = clients.filter(c=>c.id!==id); saveAll(); renderSupplierPendingCount(); renderInitialPendingNotice(); alert(t('client_refused')); }
-    function deleteClient(id){ clients = clients.filter(c=>c.id!==id); saveAll(); renderSupplierPendingCount(); alert(t('client_deleted')); }
-
-    // --- products ---
-    function addProductFromSupplier(){
-      const ttitle = byId('sp_title').value.trim();
-      const pprice = Number(byId('sp_price').value)||0;
-      const d = byId('sp_desc').value.trim();
-      const files = byId('sp_images').files;
-      if(!ttitle || !pprice){ alert(t('title_price_required')); return; }
-      const readers = files && files.length ? Array.from(files).map(f=>readFileAsDataURL(f)) : [];
-      if(readers.length>0){
-        Promise.all(readers).then(dataUrls=>{
-          products.push({id:'P-'+Date.now(),title:ttitle,price:pprice,desc:d,images:dataUrls,created:Date.now()});
-          saveAll(); showSupplierTab('products'); renderProducts(); alert(t('product_added'));
-        });
-      } else {
-        products.push({id:'P-'+Date.now(),title:ttitle,price:pprice,desc:d,images:[],created:Date.now()});
-        saveAll(); showSupplierTab('products'); renderProducts(); alert(t('product_added'));
-      }
-    }
-    function readFileAsDataURL(file){ return new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result); fr.onerror=rej; fr.readAsDataURL(file); }); }
-    function deleteProduct(id){ products = products.filter(p=>p.id!==id); saveAll(); showSupplierTab('products'); renderProducts(); alert(t('product_deleted')); }
-    function editProduct(id){ const p = products.find(x=>x.id===id); if(!p) return; const tnew = prompt(t('name'),p.title); if(tnew===null) return; const pr = prompt(t('price') || 'Prix',p.price); if(pr===null) return; const d = prompt(t('article') || 'Description',p.desc||''); p.title=tnew; p.price=Number(pr)||p.price; p.desc=d; saveAll(); showSupplierTab('products'); renderProducts(); alert(t('product_modified')); }
-
-    // --- helper for cart qty on product cards ---
+    // --- PRODUCTS: render from products[] (filled by snapshot) ---
     function getCartQty(productId){
       const it = cart.find(c=>c.id===productId);
       return it ? it.qty : 0;
     }
 
-    function increaseProductQtyInGrid(id){
-      addToCart(id,1);
-      renderProducts(); // to update qty badge and controls
-    }
-    function decreaseProductQtyInGrid(id){
-      const it = cart.find(c=>c.id===id);
-      if(!it) return;
-      it.qty = it.qty - 1;
-      if(it.qty <= 0){
-        cart = cart.filter(x=>x.id!==id);
-      }
-      sessionStorage.setItem('coursa_cart', JSON.stringify(cart));
-      renderCart();
-      renderProducts();
-    }
-
-    // --- products rendering ---
-    function renderProducts(){
+    async function renderProducts(){
       const grid = byId('productsGrid');
       grid.innerHTML='';
       const q = (byId('searchInput')?.value||'').toLowerCase();
-      products.filter(p=>!q||p.title.toLowerCase().includes(q)||p.desc.toLowerCase().includes(q)).forEach(p=>{
+      (products.filter(p=>!q||p.title.toLowerCase().includes(q)|| (p.desc||'').toLowerCase().includes(q))).forEach(p=>{
         const qtyInCart = getCartQty(p.id);
         const el=document.createElement('div');
         el.className='product';
-        // show main image + thumbnails under (all images)
         const mainImg = (p.images && p.images.length) ? p.images[0] : placeholder(p.title);
         let thumbsHtml = '';
         if(p.images && p.images.length>1){
@@ -740,15 +574,12 @@
       if(grid.innerHTML.trim()==='') grid.innerHTML = `<div class="muted">${t('no_products')}</div>`;
     }
 
-    // helper used by clickable thumbnails on card to update the card main image
     function updateCardMainImage(imgEl, productId, idx){
       const cardImg = byId('card_img_'+productId);
       if(cardImg) cardImg.src = imgEl.src;
     }
 
-    function placeholder(ti){ return 'data:image/svg+xml;utf8,'+encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='600' height='400'><rect width='100%' height='100%' fill='#f6f8fb'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-size='24' fill='#cbd5e1'>${ti}</text></svg>`); }
-
-    // --- product modal ---
+    // --- Product modal handling (reads from products[] cache) ---
     let modalProduct=null;
     function openProductModal(id){
       const p = products.find(x=>x.id===id);
@@ -773,9 +604,8 @@
     function increaseModalQty(){ const q=Number(byId('modalQty').value)||1; byId('modalQty').value=q+1; updateModalPrice(); }
     function decreaseModalQty(){ const q=Number(byId('modalQty').value)||1; if(q>1) byId('modalQty').value=q-1; updateModalPrice(); }
     function updateModalPrice(){ if(!modalProduct) return; const q=Number(byId('modalQty').value)||1; byId('modalPrice').textContent = formatPrice(modalProduct.price*q); }
-    function addFromModal(){ const q=Number(byId('modalQty').value)||1; if(isPreviewMode){ addToPreviewCart(modalProduct.id,q); isPreviewMode=false; closeProductModal(); renderPreviewCart(); } else { addToCart(modalProduct.id,q); closeProductModal(); } }
 
-    // image modal (multi-image support + slide animations + zoom wheel/pinch)
+    // --- IMAGE modal code (same as before) ---
     let modalImageList = [];
     let modalImageIndex = 0;
     let imageScale = 1;
@@ -789,7 +619,6 @@
       let imgs = [];
       if(p && p.images && p.images.length) imgs = p.images.slice();
       if(imgs.length===0){
-        // fallback: use placeholder for that product
         imgs = [placeholder('Image')];
       }
       openImageModal(imgs, startIndex);
@@ -802,7 +631,6 @@
       lastTouchDist = null;
       const stage = byId(IMAGE_STAGE_ID);
       stage.innerHTML = '';
-      // create main image element
       const img = document.createElement('img');
       img.src = modalImageList[modalImageIndex];
       img.className = 'image-slide-active';
@@ -816,7 +644,6 @@
     function attachImageHandlers(stage){
       const img = stage.querySelector('img');
       if(!img) return;
-      // wheel zoom on stage
       if(!wheelHandlerAttached){
         stage.addEventListener('wheel', imageWheelHandler, {passive:false});
         wheelHandlerAttached = true;
@@ -827,7 +654,6 @@
         stage.addEventListener('touchend', imageTouchEnd, {passive:false});
         touchHandlersAttached = true;
       }
-      // keyboard navigation
       document.addEventListener('keydown', keyboardImageNav);
     }
 
@@ -845,7 +671,6 @@
       document.removeEventListener('keydown', keyboardImageNav);
     }
 
-    // slide to next image with animation
     function nextImage(){
       if(modalImageList.length <= 1) return;
       const stage = byId(IMAGE_STAGE_ID);
@@ -854,12 +679,10 @@
       const incoming = document.createElement('img');
       incoming.src = modalImageList[nextIdx];
       incoming.dataset.idx = nextIdx;
-      // prepare incoming for enter-right
       incoming.className = '';
       incoming.style.opacity = 0;
       incoming.style.transform = 'translate(-40%,-50%)';
       stage.appendChild(incoming);
-      // force reflow then animate
       requestAnimationFrame(() => {
         incoming.style.transition = 'transform 0.45s ease, opacity 0.38s ease';
         old.style.transition = 'transform 0.45s ease, opacity 0.38s ease';
@@ -867,7 +690,6 @@
         incoming.style.opacity = 1;
         old.style.transform = 'translate(-60%,-50%)';
         old.style.opacity = 0;
-        // after transition remove old
         setTimeout(()=>{
           if(old && old.parentNode) old.parentNode.removeChild(old);
           modalImageIndex = nextIdx;
@@ -885,7 +707,6 @@
       const incoming = document.createElement('img');
       incoming.src = modalImageList[prevIdx];
       incoming.dataset.idx = prevIdx;
-      // prepare incoming for enter-left
       incoming.className = '';
       incoming.style.opacity = 0;
       incoming.style.transform = 'translate(-60%,-50%)';
@@ -970,123 +791,343 @@
       if(e.key === 'Escape') closeImageModal();
     }
 
-    // --- cart ---
-    function addToCart(id,qty=1){ const p=products.find(x=>x.id===id); if(!p){ alert(t('product_not_found')); return; } const it=cart.find(x=>x.id===id); if(it){ it.qty+=qty } else { cart.push({id, title:p.title, price:p.price, qty}) } sessionStorage.setItem('coursa_cart', JSON.stringify(cart)); renderCart(); renderProducts(); }
-    function renderCart(){ const el=byId('cartList'); el.innerHTML=''; if(cart.length===0){ el.innerHTML=`<div class="muted">${t('cart_empty')}</div>`; byId('cartTotal').textContent='0 DA'; return; } const table=document.createElement('table'); const tbody=document.createElement('tbody'); let total=0; cart.forEach((c,i)=>{ const tr=document.createElement('tr'); tr.innerHTML = `<td>${c.title} x${c.qty}</td><td style="text-align:right">${c.price*c.qty} DA</td>`; tbody.appendChild(tr); total+=c.price*c.qty; }); table.appendChild(tbody); el.appendChild(table); byId('cartTotal').textContent = total+' DA'; }
-    function clearCart(){ cart=[]; sessionStorage.setItem('coursa_cart','[]'); renderCart(); renderProducts(); }
+    // --- CART: stored in Firestore under collection "carts" with doc id = clientId
+    async function loadCartForClient(){
+      cart = [];
+      if(!currentClient) { renderCart(); return; }
+      const doc = await db.collection('carts').doc(currentClient.id).get();
+      if(doc.exists){
+        cart = doc.data().items || [];
+      } else {
+        cart = [];
+      }
+      renderCart();
+    }
+    async function saveCartForClient(){
+      if(!currentClient) return;
+      await db.collection('carts').doc(currentClient.id).set({ items: cart, updated: firebase.firestore.FieldValue.serverTimestamp() });
+    }
 
-    // --- checkout & orders ---
-    function openCartCheckout(){ if(!currentClient){ alert(t('must_be_logged')); return; } if(cart.length===0){ alert(t('cart_empty')); return; } showInvoiceModal(); }
+    function addToCart(id,qty=1){
+      if(!currentClient){ alert(t('must_be_logged')); return; }
+      const p = products.find(x=>x.id===id);
+      if(!p){ alert(t('product_not_found')); return; }
+      const it = cart.find(x=>x.id===id);
+      if(it){ it.qty += qty; } else { cart.push({ id, title:p.title, price:p.price, qty }); }
+      saveCartForClient();
+      renderCart();
+      renderProducts();
+    }
 
-    // show invoice modal AS PREVIEW (do NOT save here). Save only on confirmInvoice().
+    function renderCart(){
+      const el=byId('cartList');
+      el.innerHTML='';
+      if(!cart || cart.length===0){ el.innerHTML=`<div class="muted">${t('cart_empty')}</div>`; byId('cartTotal').textContent='0 DA'; return; }
+      const table=document.createElement('table'); const tbody=document.createElement('tbody'); let total=0;
+      cart.forEach((c,i)=>{ const tr=document.createElement('tr'); tr.innerHTML = `<td>${c.title} x${c.qty}</td><td style="text-align:right">${c.price*c.qty} DA</td>`; tbody.appendChild(tr); total+=c.price*c.qty; });
+      table.appendChild(tbody); el.appendChild(table); byId('cartTotal').textContent = total+' DA';
+    }
+
+    async function clearCart(){
+      cart = [];
+      if(currentClient) await db.collection('carts').doc(currentClient.id).set({ items: [] });
+      renderCart(); renderProducts();
+    }
+
+    function increaseProductQtyInGrid(id){
+      addToCart(id,1);
+      renderProducts();
+    }
+    function decreaseProductQtyInGrid(id){
+      const it = cart.find(c=>c.id===id);
+      if(!it) return;
+      it.qty = it.qty - 1;
+      if(it.qty <= 0){
+        cart = cart.filter(x=>x.id!==id);
+      }
+      saveCartForClient();
+      renderCart();
+      renderProducts();
+    }
+
+    // --- CHECKOUT & ORDERS ---
+    function openCartCheckout(){ if(!currentClient){ alert(t('must_be_logged')); return; } if(!cart || cart.length===0){ alert(t('cart_empty')); return; } showInvoiceModal(); }
+
     function showInvoiceModal(){
-      const inv={id:'O-'+Date.now(),date:new Date().toISOString(),client:currentClient,items:cart.map(c=>({title:c.title,qty:c.qty,subtotal:c.qty*c.price,price:c.price})),total:cart.reduce((s,i)=>s+i.qty*i.price,0)};
-      // store pending invoice (preview) - will be saved on Confirm
+      const inv={ date:new Date().toISOString(), client:{ id: currentClient.id, nom: currentClient.nom, prenom: currentClient.prenom, tel: currentClient.tel, loc: currentClient.loc }, items: cart.map(c=>({ title:c.title, qty:c.qty, subtotal:c.qty*c.price, price:c.price })), total: cart.reduce((s,i)=>s+i.qty*i.price,0) };
       window.pendingInvoice = inv;
-
       const panel=byId('invoicePanel');
       let html=`<div style='display:flex;justify-content:space-between;align-items:center'><div><h3>${t('invoice_title')}</h3><div class='muted'>${t('supplier_line')}</div></div><div>${new Date(inv.date).toLocaleString()}</div></div><hr>`;
       html += `<div><strong>${t('account')}:</strong> ${inv.client.nom} ${inv.client.prenom} — ${inv.client.tel} — ${inv.client.loc}</div>`;
       html += `<table style='margin-top:8px'><thead><tr><th>${t('article')}</th><th>${t('qty')}</th><th>${t('price')}</th></tr></thead><tbody>`;
       inv.items.forEach(it=>{ html += `<tr><td>${it.title}</td><td>${it.qty}</td><td>${it.subtotal} DA</td></tr>` });
       html += `</tbody></table><div style='text-align:right;margin-top:8px'><strong>${t('total')}: ${inv.total} DA</strong></div>`;
-
-      // Buttons: Confirm (save) and Cancel (close without saving)
       html += `<div style='text-align:right;margin-top:12px'><button style="background:#16a34a;color:white;border:none;padding:8px 12px;border-radius:8px;cursor:pointer" onclick='confirmInvoice()'>Confirmer</button> <button style="background:#f87171;color:white;border:none;padding:8px 12px;border-radius:8px;cursor:pointer" onclick='closeInvoiceModal()'>Annuler</button></div>`;
-
       panel.innerHTML = html;
       byId('invoiceModal').style.display='flex';
     }
 
-    function closeInvoiceModal(){ byId('invoiceModal').style.display='none'; }
+    async function closeInvoiceModal(){ byId('invoiceModal').style.display='none'; }
 
-    // Confirm save (called when client clicks "Confirmer")
-    function confirmInvoice(){
+    // Confirm save: create commande in Firestore, clear cart
+    async function confirmInvoice(){
       if(!window.pendingInvoice) return;
       if(!currentClient){ alert(t('must_be_logged')); return; }
-
-      // attach clientId for filtering client-side
-      window.pendingInvoice.clientId = currentClient.id;
-
-      // save to supplier orders (global orders)
-      orders.push(window.pendingInvoice);
-      saveAll();
-
-      // save to client-specific orders in localStorage
-      let clientOrders = JSON.parse(localStorage.getItem('coursa_client_orders') || '[]');
-      clientOrders.push(window.pendingInvoice);
-      localStorage.setItem('coursa_client_orders', JSON.stringify(clientOrders));
-
-      // clear cart (session)
-      sessionStorage.setItem('coursa_cart','[]');
+      const inv = window.pendingInvoice;
+      inv.clientId = currentClient.id;
+      inv.date = new Date().toISOString();
+      // add to Firestore collection "commandes"
+      const docRef = await db.collection('commandes').add(inv);
+      // clear cart in firestore
+      await db.collection('carts').doc(currentClient.id).set({ items: [] });
       cart = [];
       renderCart();
       renderProducts();
-
-      // update supplier UI
-      renderSupplierPendingCount();
-      showSupplierTab('orders');
-
-      // close invoice modal
-      closeInvoiceModal();
-
-      // refresh client orders list (under cart)
+      // UI updates
+      byId('invoiceModal').style.display='none';
       renderClientOrders();
-
-      // show success message just above client orders (i.e., under the cart)
-      const ordersList = byId('clientOrdersList');
-      const msg = document.createElement('div');
-      msg.textContent = "✅ Commande enregistrée avec succès !";
-      msg.style.background = "#ecfdf5";
-      msg.style.color = "#065f46";
-      msg.style.padding = "8px";
-      msg.style.borderRadius = "8px";
-      msg.style.marginBottom = "8px";
-      msg.style.textAlign = "center";
-      ordersList.prepend(msg);
-      setTimeout(()=> msg.remove(), 5000);
-
-      // remove pendingInvoice
+      alert(t('order_saved'));
       delete window.pendingInvoice;
     }
 
-    // --- account UI ---
-    function renderAccountBlock(){
-      const block=byId('accountBlock');
-      if(currentClient && currentClient.status==='validated'){
-        block.innerHTML = `<div><strong>${currentClient.nom} ${currentClient.prenom}</strong><div class='muted'>${currentClient.tel} — ${currentClient.loc}</div><div style='margin-top:8px'><button onclick='logoutClient()'>${t('close')}</button></div></div>`;
-        showOnly('homeScreen');
+    // --- CLIENT auth & accounts (stored in Firestore "clients") ---
+    function openClientAuth(){ byId('clientAuthModal').style.display='flex'; renderClientForm('exist'); }
+    function closeClientForm(){ byId('clientAuthModal').style.display='none'; const area = byId('clientFormArea'); area.innerHTML=''; }
+
+    function renderClientForm(mode){
+      const area = byId('clientFormArea');
+      if(mode==='new'){
+        area.innerHTML = `
+          <input class='input' id='c_nom' placeholder='${t('name')}'><br><br>
+          <input class='input' id='c_prenom' placeholder='${t('surname')}'><br><br>
+          <input class='input' id='c_tel' placeholder='${t('phone')}'><br><br>
+          <input class='input' id='c_loc' placeholder='${t('location')}'><br><br>
+          <button onclick="submitClient('new')">${t('save')}</button>
+        `;
       } else {
-        block.innerHTML = `<div class='muted'>${t('no_client_connected')}</div><div style='margin-top:8px'><button onclick='openClientAuth()'>${t('client_auth_btn')}</button></div>`;
-        showOnly('initialScreen');
+        area.innerHTML = `
+          <input class='input' id='c_nom' placeholder='${t('name')}'><br><br>
+          <input class='input' id='c_prenom' placeholder='${t('surname')}'><br><br>
+          <input class='input' id='c_tel' placeholder='${t('phone')}'><br><br>
+          <button onclick="submitClient('exist')">${t('login')}</button>
+        `;
       }
     }
-    function logoutClient(){ currentClient=null; localStorage.removeItem(KEY_CURRENT); renderAccountBlock(); showOnly('initialScreen'); }
 
-    function enterHome(){ currentClient = JSON.parse(localStorage.getItem(KEY_CURRENT) || JSON.stringify(currentClient)); if(!currentClient){ alert(t('no_client_connected')); return; } if(currentClient.status!=='validated'){ alert(t('account_not_validated')); return; } showOnly('homeScreen'); renderProducts(); renderCart(); renderClientOrders(); }
-
-    function showOnly(id){
-      const sections=['initialScreen','homeScreen','supplierLoginSection','supplierPanelSection'];
-      sections.forEach(s=>{ const el=byId(s); if(el) el.style.display='none'; });
-      const sel=byId(id); if(sel) sel.style.display='block';
+    async function submitClient(mode){
+      const nom = byId('c_nom')?.value?.trim();
+      const prenom = byId('c_prenom')?.value?.trim();
+      const tel = byId('c_tel')?.value?.trim();
+      const loc = byId('c_loc')?.value?.trim();
+      if(!nom||!prenom||!tel){ alert(t('fill_required')); return; }
+      if(mode==='new' && !loc){ alert(t('location_required')); return; }
+      if(mode==='new'){
+        const client = { nom, prenom, tel, loc: loc||'', status:'pending', created: new Date().toISOString() };
+        // add to Firestore
+        const docRef = await db.collection('clients').add(client);
+        // store local current client reference (in-memory)
+        currentClient = { id: docRef.id, ...client };
+        // create empty cart doc for client
+        await db.collection('carts').doc(currentClient.id).set({ items: [] });
+        closeClientForm();
+        showPendingForClient(); renderSupplierPendingCount();
+        alert(t('account_created_pending'));
+      } else {
+        // login: find client document with matching details and status validated
+        const snapshot = await db.collection('clients').where('nom','==',nom).where('prenom','==',prenom).where('tel','==',tel).where('status','==','validated').get();
+        if(!snapshot.empty){
+          const doc = snapshot.docs[0];
+          currentClient = { id: doc.id, ...doc.data() };
+          closeClientForm();
+          await loadCartForClient();
+          enterHome();
+        } else {
+          alert(t('account_not_found'));
+        }
+      }
     }
 
-    // --- client load on page start ---
-    function tryLoadCurrent(){ const c=JSON.parse(localStorage.getItem(KEY_CURRENT) || 'null'); if(c){ const fresh=clients.find(x=>x.id===c.id); if(fresh) currentClient=fresh; else currentClient=c; } }
+    function showPendingForClient(){
+      showOnly('initialScreen');
+      const panel = byId('pendingNotice');
+      panel.innerHTML = `<div style="background:#fff3cd;padding:12px;border-radius:8px;border:1px solid #ffeeba"><strong>${t('account_registered')}</strong><div class='muted'>${t('account_pending_description', {name: (currentClient? (currentClient.nom + ' ' + currentClient.prenom) : '')})}</div></div>`;
+    }
 
-    // init
-    init();
-    tryLoadCurrent();
-    renderProducts();
-    renderCart();
-    renderSupplierPendingCount();
-    renderInitialPendingNotice();
-    renderClientOrders(); // show client's orders (if any) on load
+    // --- SUPPLIER login / panel (password hardcoded) ---
+    function openSupplierLogin(){ showOnly('supplierLoginSection'); byId('supplierPwd').value=''; renderSupplierPendingCount(); }
+    function closeSupplierLogin(){ showOnly('initialScreen'); }
+    function supplierLogin(){ const v = byId('supplierPwd').value.trim(); if(v===SUPPLIER_PWD){ showSupplierPanel(); } else { alert(t('incorrect_password')); } }
 
-    // expose functions globally used in html
-    window.openClientAuth=openClientAuth; window.openSupplierLogin=openSupplierLogin; window.supplierLogin=supplierLogin; window.closeSupplierLogin=closeSupplierLogin; window.logoutSupplier=logoutSupplier; window.showSupplierTab=showSupplierTab; window.addToCart=addToCart; window.renderProducts=renderProducts; window.renderCart=renderCart; window.clearCart=clearCart; window.openProductModal=openProductModal; window.closeProductModal=closeProductModal; window.increaseModalQty=increaseModalQty; window.decreaseModalQty=decreaseModalQty; window.addFromModal=addFromModal; window.openCartCheckout=openCartCheckout; window.readFileAsDataURL=readFileAsDataURL; window.deleteProduct=deleteProduct; window.validateClient=validateClient; window.rejectClient=rejectClient; window.deleteClient=deleteClient; window.editProduct=editProduct; window.logoutClient=logoutClient; window.enterHome=enterHome; window.renderInitialPendingNotice=renderInitialPendingNotice; window.increaseProductQtyInGrid=increaseProductQtyInGrid; window.decreaseProductQtyInGrid=decreaseProductQtyInGrid; window.deleteOrder=deleteOrder; window.resetImageZoom=resetImageZoom; window.openImageModal=openImageModal; window.openImageModalForProduct=openImageModalForProduct; window.nextImage=nextImage; window.prevImage=prevImage;
+    function showSupplierPanel(){ byId('supplierLoginSection').style.display='none'; byId('supplierPanelSection').style.display='block'; showSupplierTab('clients'); renderSupplierPendingCount(); }
 
-    // --- Supplier Preview (client-side preview inside supplier panel) ---
+    function logoutSupplier(){ byId('supplierPanelSection').style.display='none'; showOnly('initialScreen'); }
+
+    function renderInitialPendingNotice(){
+      const pendingCount = clients.filter(c=>c.status==='pending').length;
+      const el = byId('pendingNotice');
+      if(pendingCount>0){
+        el.innerHTML = `<div style="background:#fff3cd;padding:12px;border-radius:8px;border:1px solid #ffeeba"><strong>${pendingCount} nouveau(x) client(s) en attente</strong><div class='muted'>${t('supplier_protected')}</div></div>`;
+      } else {
+        el.innerHTML = '';
+      }
+    }
+
+    function renderSupplierPendingCount(){
+      const count = clients.filter(c=>c.status==='pending').length;
+      const el = byId('pendingCount');
+      if(el) el.textContent = count;
+    }
+
+    // Supplier tabs rendering helpers (clients/products/orders)
+    function showSupplierTab(tab){
+      const container = byId('supplierTabs');
+      if(tab==='clients'){
+        renderSupplierClientsTab();
+        return;
+      } else if(tab==='products'){
+        renderSupplierProductsTab();
+        return;
+      } else if(tab==='orders'){
+        renderSupplierOrdersTab();
+        return;
+      }
+    }
+
+    function renderSupplierClientsTab(){
+      const container = byId('supplierTabs');
+      let html = `<h4>${t('clients')}</h4>`;
+      const pending = clients.filter(c=>c.status==='pending');
+      const validated = clients.filter(c=>c.status==='validated');
+      html += `<h5>${t('clients_pending')} (${pending.length})</h5>`;
+      if(pending.length===0) html += `<div class="muted">${t('no_clients_pending')}</div>`;
+      pending.forEach(c=>{
+        html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid #f1f5f9"><div><strong>${c.nom} ${c.prenom}</strong><div class='muted'>${c.tel} — ${c.loc}</div></div><div class="row"><button onclick="validateClient('${c.id}')">${t('accept')}</button><button class="input" onclick="rejectClient('${c.id}')">${t('reject')}</button></div></div>`;
+      });
+      html += `<h5 style='margin-top:12px'>${t('clients_validated')} (${validated.length})</h5>`;
+      if(validated.length===0) html += `<div class="muted">${t('no_clients_validated')}</div>`;
+      validated.forEach(c=>{
+        html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid #f1f5f9"><div><strong>${c.nom} ${c.prenom}</strong><div class='muted'>${c.tel} — ${c.loc}</div></div><div class="row"><button class='input' onclick="deleteClient('${c.id}')">${t('delete')}</button></div></div>`;
+      });
+      container.innerHTML = html;
+    }
+
+    function renderSupplierProductsTab(){
+      const container = byId('supplierTabs');
+      let html = `<h4>${t('products')}</h4>`;
+      html += `<div style='display:flex;gap:8px;align-items:center'><input id='sp_title' class='input' placeholder='${t('name')}'><input id='sp_price' class='input' placeholder='${t('price') || "Prix"}'><input id='sp_desc' class='input' placeholder='${t('article') || "Description"}'><input type='file' id='sp_images' multiple accept='image/*'><button onclick='addProductFromSupplier()'>${t('add_product')}</button></div>`;
+      html += '<div style="margin-top:12px">';
+      if(products.length===0) html += `<div class="muted">${t('no_products')}</div>`;
+      products.forEach((p,i)=>{
+        html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid #f1f5f9"><div><strong>${p.title}</strong><div class='muted'>${p.price} DA — ${p.desc}</div></div><div class='row'><button onclick="editProduct('${p.id}')">${t('edit')}</button><button class='input' onclick="deleteProduct('${p.id}')">${t('delete')}</button></div></div>`;
+      });
+      html += '</div>';
+      container.innerHTML = html;
+    }
+
+    function renderSupplierProductsList(){
+      // if supplier products tab is visible, refresh it
+      if(byId('supplierTabs') && byId('supplierPanelSection') && byId('supplierPanelSection').style.display !== 'none'){
+        const tab = byId('supplierTabs').querySelector('h4');
+        if(tab && tab.textContent && tab.textContent.includes(t('products'))){
+          renderSupplierProductsTab();
+        }
+      }
+    }
+
+    function renderSupplierOrdersTab(){
+      const container = byId('supplierTabs');
+      let html = `<h4>${t('bank_orders')}</h4>`;
+      if(orders.length===0){ html += `<div class="muted">${t('no_orders')}</div>`; }
+      let totalAll = 0;
+      orders.forEach(o=>{
+        html += `<div id="order_row_${o.id}" style='border:1px solid #eef6ff;padding:10px;border-radius:8px;margin-bottom:8px'><div style='display:flex;justify-content:space-between'><div><strong>${o.client.nom} ${o.client.prenom}</strong><div class='muted'>${o.client.tel} — ${o.client.loc}</div></div><div class='muted'>${new Date(o.date).toLocaleString()}</div></div>`;
+        html += '<table style="margin-top:8px"><thead><tr><th>'+t('article')+'</th><th>'+t('qty')+'</th><th>'+t('price')+'</th></tr></thead><tbody>';
+        (o.items||[]).forEach(it=>{
+          html += `<tr><td>${it.title}</td><td>${it.qty}</td><td>${it.subtotal} DA</td></tr>`;
+        });
+        html += `</tbody></table><div style='display:flex;justify-content:space-between;align-items:center;margin-top:8px'><div></div><div style='text-align:right'><strong>${t('total')}: ${o.total} DA</strong></div></div>`;
+        html += `<div style='text-align:right;margin-top:8px'><button class='input' onclick="deleteOrder('${o.id}')">🗑️ Supprimer</button></div>`;
+        html += `</div>`;
+        totalAll += o.total || 0;
+      });
+      html += `<div style='margin-top:12px;text-align:right'><strong>${t('total_revenue')}: ${totalAll} DA</strong></div>`;
+      container.innerHTML = html;
+    }
+
+    async function deleteOrder(orderId){
+      if(!confirm('Supprimer cette commande ?')) return;
+      await db.collection('commandes').doc(orderId).delete();
+      alert('Commande supprimée');
+    }
+
+    async function validateClient(id){
+      await db.collection('clients').doc(id).update({ status:'validated' });
+      alert(t('client_validated'));
+    }
+    async function rejectClient(id){
+      await db.collection('clients').doc(id).delete();
+      alert(t('client_refused'));
+    }
+    async function deleteClient(id){
+      await db.collection('clients').doc(id).delete();
+      alert(t('client_deleted'));
+    }
+
+    // --- PRODUCTS management with Storage (multiple images allowed) ---
+    function readFileAsDataURL(file){ return new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result); fr.onerror=rej; fr.readAsDataURL(file); }); }
+
+    async function addProductFromSupplier(){
+      const ttitle = (byId('sp_title')||{value:''}).value.trim();
+      const pprice = Number((byId('sp_price')||{value:0}).value)||0;
+      const d = (byId('sp_desc')||{value:''}).value.trim();
+      const files = (byId('sp_images')||{}).files;
+      if(!ttitle || !pprice){ alert(t('title_price_required')); return; }
+
+      // upload files to storage if present
+      let uploadedUrls = [];
+      if(files && files.length){
+        // upload each file under produits/<timestamp>_<filename>
+        for(const f of Array.from(files)){
+          const path = `produits/${Date.now()}_${f.name.replace(/\s/g,'_')}`;
+          const ref = storage.ref().child(path);
+          await ref.put(f);
+          const url = await ref.getDownloadURL();
+          uploadedUrls.push(url);
+        }
+      }
+
+      // create product doc in Firestore
+      const prod = { title: ttitle, price: pprice, desc: d, images: uploadedUrls, created: firebase.firestore.FieldValue.serverTimestamp() };
+      await db.collection('produits').add(prod);
+
+      // clear supplier inputs and refresh supplier tab
+      if(byId('sp_title')) byId('sp_title').value='';
+      if(byId('sp_price')) byId('sp_price').value='';
+      if(byId('sp_desc')) byId('sp_desc').value='';
+      if(byId('sp_images')) byId('sp_images').value='';
+      alert(t('product_added'));
+    }
+
+    async function deleteProduct(id){
+      // optional: delete images from storage (not implemented automatically to avoid accidental deletion)
+      await db.collection('produits').doc(id).delete();
+      alert(t('product_deleted'));
+    }
+
+    async function editProduct(id){
+      const doc = await db.collection('produits').doc(id).get();
+      if(!doc.exists) { alert(t('product_not_found')); return; }
+      const p = { id: doc.id, ...doc.data() };
+      const tnew = prompt(t('name'), p.title);
+      if(tnew===null) return;
+      const pr = prompt(t('price') || 'Prix', p.price);
+      if(pr===null) return;
+      const d = prompt(t('article') || 'Description', p.desc||'');
+      await db.collection('produits').doc(id).update({ title: tnew, price: Number(pr)||p.price, desc: d });
+      alert(t('product_modified'));
+    }
+
+    // --- Supplier Preview (keeps same UI; preview cart ephemeral in-memory) ---
     let supplierPreviewCart = [];
     let isPreviewMode = false;
 
@@ -1119,7 +1160,7 @@
     function clearPreviewCart(){ supplierPreviewCart = []; renderPreviewCart(); }
 
     function confirmPreviewOrder(){ if(supplierPreviewCart.length===0){ alert(t('preview_cart_empty')); return; }
-      const previewOrder = {id:'PREV-'+Date.now(), date:new Date().toISOString(), client:{nom:'(Preview)',prenom:'(Preview)',tel:'',loc:'Preview'}, items:supplierPreviewCart.map(c=>({title:c.title,qty:c.qty,subtotal:c.price*c.qty})), total:supplierPreviewCart.reduce((s,i)=>s+i.qty*i.price,0)};
+      const previewOrder = { id:'PREV-'+Date.now(), date:new Date().toISOString(), client:{nom:'(Preview)',prenom:'(Preview)',tel:'',loc:'Preview'}, items:supplierPreviewCart.map(c=>({title:c.title,qty:c.qty,subtotal:c.price*c.qty})), total:supplierPreviewCart.reduce((s,i)=>s+i.qty*i.price,0) };
       const panel = byId('invoicePanel'); let html = `<div style='display:flex;justify-content:space-between;align-items:center'><div><h3>${t('preview_invoice_title')}</h3><div class='muted'>${t('preview_not_saved')}</div></div><div>${new Date(previewOrder.date).toLocaleString()}</div></div><hr>`;
       html += `<table style='margin-top:8px'><thead><tr><th>${t('article')}</th><th>${t('qty')}</th><th>${t('price')}</th></tr></thead><tbody>`;
       previewOrder.items.forEach(it=>{ html += `<tr><td>${it.title}</td><td>${it.qty}</td><td>${it.subtotal} DA</td></tr>`; });
@@ -1129,117 +1170,82 @@
       byId('invoiceModal').style.display='flex';
     }
 
-    // override open product modal for preview to set flag
     function openProductModalPreview(id){ isPreviewMode = true; openProductModal(id); }
-    // ensure addFromModal supports preview mode - already defined above
 
-    // ensure supplier tabs include preview option
-    const _orig_showSupplierTab = window.showSupplierTab || function(tab){};
-    window.showSupplierTab = function(tab){ if(!tab) tab='clients'; if(tab==='preview') return showPreviewTab(); return _orig_showSupplierTab(tab); };
-
-    // add preview button to supplier panel header when panel is opened
-    const _orig_showSupplierPanel = showSupplierPanel;
-    showSupplierPanel = function(){ _orig_showSupplierPanel(); // inject preview button into panel controls
-      const controls = document.querySelector('#supplierPanelSection .row');
-      if(controls){
-        // avoid duplicate btn
-        if(!controls.querySelector('button[data-preview-btn]')){
-          const btn = document.createElement('button');
-          btn.className='input';
-          btn.setAttribute('data-preview-btn','1');
-          btn.textContent=t('preview_btn');
-          btn.onclick = ()=>showSupplierTab('preview');
-          controls.parentNode.querySelectorAll('.input').forEach(n=>n.style.marginRight='6px');
-          controls.appendChild(btn);
-        } else {
-          const existing = controls.querySelector('button[data-preview-btn]');
-          existing.textContent = t('preview_btn');
-        }
-      }
-    };
-
-    // --- Client orders rendering (client-side only, filtered by clientId) ---
-    function renderClientOrders(){
+    // --- client orders rendering: query commandes where clientId == currentClient.id
+    async function renderClientOrders(){
       const list = byId('clientOrdersList');
-      let allOrders = JSON.parse(localStorage.getItem("coursa_client_orders") || "[]");
       if(!currentClient){
         list.innerHTML = "<div class='muted'>Connectez-vous pour voir vos commandes</div>";
         return;
       }
-      let clientOrders = allOrders.filter(o => o.clientId === currentClient.id);
+      // query commandes for this client
+      const snapshot = await db.collection('commandes').where('clientId','==',currentClient.id).orderBy('date','desc').get();
+      const clientOrders = snapshot.docs.map(d=> ({ id: d.id, ...d.data() }) );
       if(clientOrders.length === 0){
         list.innerHTML = "<div class='muted'>Aucune commande</div>";
         return;
       }
       let html = "<table style='width:100%'><tbody>";
       clientOrders.forEach(o=>{
-        html += `<tr><td><strong>${new Date(o.date).toLocaleDateString()}</strong></td><td>${o.items.map(it=>`${it.title} x${it.qty}`).join(", ")}</td><td style="text-align:right">${o.total} DA</td></tr>`;
+        html += `<tr><td><strong>${new Date(o.date).toLocaleDateString()}</strong></td><td>${(o.items||[]).map(it=>`${it.title} x${it.qty}`).join(", ")}</td><td style="text-align:right">${o.total} DA</td></tr>`;
       });
       html += "</tbody></table>";
       list.innerHTML = html;
-    } </script>
-  <script>
-<!-- === Firebase Firestore (compat mode pour GitHub Pages) === -->
-<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+    }
 
-<script>
-  // 🧩 Configuration Firebase
-  const firebaseConfig = {
-    apiKey: "AIzaSyCaHwTAC2aYddQjb5LssZWnmsRjRZmEHrU",
-    authDomain: "coursa-2a118.firebaseapp.com",
-    projectId: "coursa-2a118",
-    storageBucket: "coursa-2a118.appspot.com",
-    messagingSenderId: "177195566543",
-    appId: "1:177195566543:web:89d3d7635f805823e53eba",
-    measurementId: "G-SYSSXWN94G"
-  };
+    // --- account UI & session (in-memory) ---
+    function renderAccountBlock(){
+      const block=byId('accountBlock');
+      if(currentClient && currentClient.status==='validated'){
+        block.innerHTML = `<div><strong>${currentClient.nom} ${currentClient.prenom}</strong><div class='muted'>${currentClient.tel} — ${currentClient.loc}</div><div style='margin-top:8px'><button onclick='logoutClient()'>${t('close')}</button></div></div>`;
+        showOnly('homeScreen');
+      } else {
+        block.innerHTML = `<div class='muted'>${t('no_client_connected')}</div><div style='margin-top:8px'><button onclick='openClientAuth()'>${t('client_auth_btn')}</button></div>`;
+        showOnly('initialScreen');
+      }
+    }
 
-  // 🚀 Initialisation
-  firebase.initializeApp(firebaseConfig);
-  const db = firebase.firestore();
+    function logoutClient(){ currentClient=null; cart=[]; renderAccountBlock(); showOnly('initialScreen'); }
 
-  // 🔄 Synchronisation de base
-  async function syncFromFirebase() {
-    const prodsSnap = await db.collection("products").get();
-    const clientsSnap = await db.collection("clients").get();
-    const ordersSnap = await db.collection("orders").get();
+    async function enterHome(){
+      if(!currentClient){ alert(t('no_client_connected')); return; }
+      if(currentClient.status!=='validated'){ alert(t('account_not_validated')); return; }
+      await loadCartForClient();
+      showOnly('homeScreen');
+      renderProducts();
+      renderCart();
+      renderClientOrders();
+    }
 
-    products = prodsSnap.docs.map(d => d.data());
-    clients = clientsSnap.docs.map(d => d.data());
-    orders = ordersSnap.docs.map(d => d.data());
+    function showOnly(id){
+      const sections=['initialScreen','homeScreen','supplierLoginSection','supplierPanelSection'];
+      sections.forEach(s=>{ const el=byId(s); if(el) el.style.display='none'; });
+      const sel=byId(id); if(sel) sel.style.display='block';
+    }
 
-    saveAll();
-    renderProducts();
-    renderSupplierPendingCount();
-    renderInitialPendingNotice();
-    renderClientOrders();
-  }
+    // --- utility: render supplier pending count on start & when clients change ---
+    // (renderSupplierPendingCount invoked by onSnapshot earlier)
 
-  async function pushAllToFirebase() {
-    for (const p of products) await db.collection("products").doc(p.id).set(p);
-    for (const c of clients) await db.collection("clients").doc(c.id).set(c);
-    for (const o of orders) await db.collection("orders").doc(o.id).set(o);
-  }
+    // --- initialization ---
+    function init(){
+      applyLanguage('fr');
+      startRealtimeListeners();
+      // initial empty render (data will arrive via onSnapshot)
+      renderProducts();
+      renderCart();
+      renderSupplierPendingCount();
+      renderInitialPendingNotice();
+    }
 
-  async function removeProductFromFirebase(id) {
-    await db.collection("products").doc(id).delete();
-  }
+    // expose functions globally used in html
+    window.openClientAuth=openClientAuth; window.openSupplierLogin=openSupplierLogin; window.supplierLogin=supplierLogin; window.closeSupplierLogin=closeSupplierLogin; window.logoutSupplier=logoutSupplier; window.showSupplierTab=showSupplierTab; window.addToCart=addToCart; window.renderProducts=renderProducts; window.renderCart=renderCart; window.clearCart=clearCart; window.openProductModal=openProductModal; window.closeProductModal=closeProductModal; window.increaseModalQty=increaseModalQty; window.decreaseModalQty=decreaseModalQty; window.addFromModal=addFromModal; window.openCartCheckout=openCartCheckout; window.readFileAsDataURL=readFileAsDataURL; window.deleteProduct=deleteProduct; window.validateClient=validateClient; window.rejectClient=rejectClient; window.deleteClient=deleteClient; window.editProduct=editProduct; window.logoutClient=logoutClient; window.enterHome=enterHome; window.renderInitialPendingNotice=renderInitialPendingNotice; window.increaseProductQtyInGrid=increaseProductQtyInGrid; window.decreaseProductQtyInGrid=decreaseProductQtyInGrid; window.deleteOrder=deleteOrder; window.resetImageZoom=resetImageZoom; window.openImageModal=openImageModal; window.openImageModalForProduct=openImageModalForProduct; window.nextImage=nextImage; window.prevImage=prevImage; window.openProductModalPreview=openProductModalPreview;
 
-  const _orig_saveAll = window.saveAll;
-  window.saveAll = async function() {
-    _orig_saveAll();
-    await pushAllToFirebase();
-  };
+    // --- small function used by modal addFromModal to add to cart or preview ---
+    function addFromModal(){ const q=Number(byId('modalQty').value)||1; if(isPreviewMode){ addToPreviewCart(modalProduct.id,q); isPreviewMode=false; closeProductModal(); renderPreviewCart(); } else { addToCart(modalProduct.id,q); closeProductModal(); } }
 
-  const _orig_deleteProduct = window.deleteProduct;
-  window.deleteProduct = async function(id) {
-    _orig_deleteProduct(id);
-    await removeProductFromFirebase(id);
-    await syncFromFirebase();
-  };
-
-  window.addEventListener("load", syncFromFirebase);
-</script>
+    // start
+    init();
+  </script>
 </body>
 </html>
