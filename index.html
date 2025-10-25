@@ -1178,7 +1178,68 @@
       html += "</tbody></table>";
       list.innerHTML = html;
     }
+<!-- === Firebase Firestore Connection === -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+  import { getFirestore, collection, getDocs, setDoc, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
+  // 🔧 Mets ici ta configuration Firebase :
+  const firebaseConfig = {
+    apiKey: "AIzaSyCaHwTAC2aYddQjb5LssZWnmsRjRZmEHrU",
+    authDomain: "coursa-2a118.firebaseapp.com",
+    projectId: "coursa-2a118",
+    storageBucket: "coursa-2a118.firebasestorage.app",
+    messagingSenderId: "177195566543",
+    appId: "1:177195566543:web:89d3d7635f805823e53eba",
+    measurementId: "G-SYSSXWN94G"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+
+  // --- 🔄 Synchronisation Firestore ---
+  async function syncFromFirebase() {
+    const prodsSnap = await getDocs(collection(db, "products"));
+    const clientsSnap = await getDocs(collection(db, "clients"));
+    const ordersSnap = await getDocs(collection(db, "orders"));
+
+    products = prodsSnap.docs.map(d => d.data());
+    clients = clientsSnap.docs.map(d => d.data());
+    orders = ordersSnap.docs.map(d => d.data());
+
+    saveAll();
+    renderProducts();
+    renderSupplierPendingCount();
+    renderInitialPendingNotice();
+    renderClientOrders();
+  }
+
+  async function pushAllToFirebase() {
+    for (const p of products) await setDoc(doc(db, "products", p.id), p);
+    for (const c of clients) await setDoc(doc(db, "clients", c.id), c);
+    for (const o of orders) await setDoc(doc(db, "orders", o.id), o);
+  }
+
+  async function removeProductFromFirebase(id) {
+    await deleteDoc(doc(db, "products", id));
+  }
+
+  // --- 🪄 On relie ça aux fonctions existantes ---
+  const _orig_saveAll = window.saveAll;
+  window.saveAll = async function() {
+    _orig_saveAll();
+    await pushAllToFirebase();
+  };
+
+  const _orig_deleteProduct = window.deleteProduct;
+  window.deleteProduct = async function(id) {
+    _orig_deleteProduct(id);
+    await removeProductFromFirebase(id);
+    await syncFromFirebase();
+  };
+
+  window.addEventListener("load", syncFromFirebase);
+</script>
   </script>
 </body>
 </html>
