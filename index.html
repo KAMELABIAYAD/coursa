@@ -1177,30 +1177,29 @@
       });
       html += "</tbody></table>";
       list.innerHTML = html;
-    }
-<!-- === Firebase Firestore (Version compatible GitHub Pages) === -->
-<!-- Firebase App (base SDK) -->
+    } </script>
+  <script>
+<!-- === Firebase Firestore (compat mode pour GitHub Pages) === -->
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
-<!-- Firebase Firestore -->
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
 
 <script>
-  //  Ta configuration Firebase
+  // 🧩 Configuration Firebase
   const firebaseConfig = {
     apiKey: "AIzaSyCaHwTAC2aYddQjb5LssZWnmsRjRZmEHrU",
     authDomain: "coursa-2a118.firebaseapp.com",
     projectId: "coursa-2a118",
-    storageBucket: "coursa-2a118.firebasestorage.app",
+    storageBucket: "coursa-2a118.appspot.com",
     messagingSenderId: "177195566543",
     appId: "1:177195566543:web:89d3d7635f805823e53eba",
     measurementId: "G-SYSSXWN94G"
   };
 
-  //  Initialisation Firebase
+  // 🚀 Initialisation
   firebase.initializeApp(firebaseConfig);
   const db = firebase.firestore();
 
-  // ---  Synchronisation Firestore ---
+  // 🔄 Synchronisation de base
   async function syncFromFirebase() {
     const prodsSnap = await db.collection("products").get();
     const clientsSnap = await db.collection("clients").get();
@@ -1227,7 +1226,6 @@
     await db.collection("products").doc(id).delete();
   }
 
-  // ---  Connecter au code existant ---
   const _orig_saveAll = window.saveAll;
   window.saveAll = async function() {
     _orig_saveAll();
@@ -1242,7 +1240,6 @@
   };
 
   window.addEventListener("load", syncFromFirebase);
-
 </script>
 </body>
 </html>
