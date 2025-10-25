@@ -1178,12 +1178,13 @@
       html += "</tbody></table>";
       list.innerHTML = html;
     }
-<!-- === Firebase Firestore Connection === -->
-<script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-  import { getFirestore, collection, getDocs, setDoc, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+<!-- === Firebase Firestore Connection (version compatible) === -->
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js"></script>
 
-  // 🔧 Mets ici ta configuration Firebase :
+<script>
+  //  Ta configuration Firebase
   const firebaseConfig = {
     apiKey: "AIzaSyCaHwTAC2aYddQjb5LssZWnmsRjRZmEHrU",
     authDomain: "coursa-2a118.firebaseapp.com",
@@ -1194,14 +1195,15 @@
     measurementId: "G-SYSSXWN94G"
   };
 
-  const app = initializeApp(firebaseConfig);
-  const db = getFirestore(app);
+  // Initialiser Firebase
+  const app = firebase.initializeApp(firebaseConfig);
+  const db = firebase.firestore();
 
-  // --- 🔄 Synchronisation Firestore ---
+  // ---  Synchronisation Firestore ---
   async function syncFromFirebase() {
-    const prodsSnap = await getDocs(collection(db, "products"));
-    const clientsSnap = await getDocs(collection(db, "clients"));
-    const ordersSnap = await getDocs(collection(db, "orders"));
+    const prodsSnap = await db.collection("products").get();
+    const clientsSnap = await db.collection("clients").get();
+    const ordersSnap = await db.collection("orders").get();
 
     products = prodsSnap.docs.map(d => d.data());
     clients = clientsSnap.docs.map(d => d.data());
@@ -1215,16 +1217,16 @@
   }
 
   async function pushAllToFirebase() {
-    for (const p of products) await setDoc(doc(db, "products", p.id), p);
-    for (const c of clients) await setDoc(doc(db, "clients", c.id), c);
-    for (const o of orders) await setDoc(doc(db, "orders", o.id), o);
+    for (const p of products) await db.collection("products").doc(p.id).set(p);
+    for (const c of clients) await db.collection("clients").doc(c.id).set(c);
+    for (const o of orders) await db.collection("orders").doc(o.id).set(o);
   }
 
   async function removeProductFromFirebase(id) {
-    await deleteDoc(doc(db, "products", id));
+    await db.collection("products").doc(id).delete();
   }
 
-  // --- 🪄 On relie ça aux fonctions existantes ---
+  // ---  Connecte Firebase avec ton code existant ---
   const _orig_saveAll = window.saveAll;
   window.saveAll = async function() {
     _orig_saveAll();
@@ -1240,6 +1242,7 @@
 
   window.addEventListener("load", syncFromFirebase);
 </script>
+
   </script>
 </body>
 </html>
